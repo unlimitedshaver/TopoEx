@@ -1,4 +1,4 @@
-
+To install and use `src\test_env.py` to verify successful installation, follow the steps below.
 1.Install from conda_env.txt
 
 ```
@@ -9,6 +9,13 @@ pip install xxx [ogb,gudhi,pandas,...]
 ```
 
 2.Install from scratch
+
+```
+conda create -n tpex python=3.10
+conda activate tpex
+```
+
+
 
 ```
 pip install torch==1.13.1 --extra-index-url https://download.pytorch.org/whl/${CUDA}
