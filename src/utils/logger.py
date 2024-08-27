@@ -117,15 +117,12 @@ def get_eval_score(epoch, phase, log_dict, writer, warmup, batch):
         # writer.add_scalar(f'gsat_{phase}/prec_at_2k', prec_at_2k, epoch)
         # writer.add_scalar(f'gsat_{phase}/prec_at_3k', prec_at_3k, epoch)
         # writer.add_scalar(f'gsat_{phase}/avg_auroc', avg_auroc, epoch)
-        # writer.add_scalar(f'gsat_{phase}/angles', angles, epoch)
-        # writer.add_scalar(f'gsat_{phase}/eigen_ratio', eigen_ratio, epoch)
 
         writer.add_histogram(f'gsat_{phase}/bkg_attn_weights', bkg_attn_weights, epoch)
         writer.add_histogram(f'gsat_{phase}/signal_attn_weights', signal_attn_weights, epoch)
-        # writer.add_histogram(f'gsat_{phase}/angles_hist', record_dict['angles'], epoch)
 
-        # writer.add_scalar(f'gsat_{phase}/avg_bkg_attn_weights/', bkg_attn_weights.mean(), epoch)
-        # writer.add_scalar(f'gsat_{phase}/avg_signal_attn_weights/', signal_attn_weights.mean(), epoch)
+        writer.add_scalar(f'gsat_{phase}/avg_bkg_attn_weights/', bkg_attn_weights.mean(), epoch)
+        writer.add_scalar(f'gsat_{phase}/avg_signal_attn_weights/', signal_attn_weights.mean(), epoch)
         writer.add_pr_curve(f'PR_Curve/gsat_{phase}/', exp_labels, attn1, epoch)
 
     return desc, org_clf_acc, org_clf_auc, masked_clf_acc, masked_clf_auc, exp_auc#, prec_at_k, prec_at_2k, prec_at_3k, angles, eigen_ratio
@@ -147,10 +144,6 @@ def get_prec_at_k(ids_of_ranked_attn, labels_for_graph_i, k):
 def get_precision_at_k_and_avgauroc_and_angles(exp_labels, attn, covar_mat, node_dir, topk, attn_graph_id):
     precision_at_k, precision_at_2k, precision_at_3k = [], [], []
     avg_auroc = []
-    all_avg_angles = []
-    all_angles = []
-    all_avg_eigen_ratio = []
-    all_dirs = []
     graph_ids = attn_graph_id.unique()
     for i in graph_ids:
         labels_for_graph_i = exp_labels[attn_graph_id == i]
@@ -173,55 +166,11 @@ def get_precision_at_k_and_avgauroc_and_angles(exp_labels, attn, covar_mat, node
         signal_nodes_by_thresholding = set(np.argsort(-attn_for_graph_i)[:np.argmax(np.diff(np.sort(-attn_for_graph_i)))+1].tolist())  # largest gap
         recalled_nodes = set(ids_of_topk_ranked_attn[labels_of_topk_ranked_attn == 1].tolist())  # top k
         selected_signal_nodes = sorted(list(signal_nodes_by_thresholding.intersection(recalled_nodes)))
-        # avg_angles, angles, avg_eigen_ratio, dirs = get_angles(covar_mat_for_graph_i[selected_signal_nodes] if covar_mat is not None else None,
-                                                            #    node_dir_for_graph_i[selected_signal_nodes] if node_dir is not None else None)
 
         # avg_auroc.append(roc_auc_score(labels_for_graph_i, attn_for_graph_i))
         avg_auroc.append(0.0)  # to save time
 
-        # if avg_angles is not None:
-        #     assert angles is not None
-        #     all_avg_angles.append(avg_angles)
-        #     all_avg_eigen_ratio.append(avg_eigen_ratio)
-        #     all_angles.append(angles.tolist())
-        #     all_dirs.append(dirs)
-
-    # all_avg_angles = torch.tensor(all_avg_angles)
-    # all_avg_eigen_ratio = torch.tensor(all_avg_eigen_ratio)
-    # if all_avg_angles.shape[0] == 0:
-    #     all_avg_angles = None
-    #     all_angles = None
-    #     all_avg_eigen_ratio = None
-    #     all_dirs = None
-
-    return torch.tensor(precision_at_k), torch.tensor(precision_at_2k), torch.tensor(precision_at_3k), torch.tensor(avg_auroc)##, all_avg_angles, all_angles, all_avg_eigen_ratio, all_dirs
-
-
-def get_angles(covar_mat, node_dir):
-    if covar_mat is not None and node_dir is not None and node_dir.shape[0] != 0:
-        non_zero_dir_idx = (node_dir == torch.zeros_like(node_dir[0])).sum(1) == 0
-        covar_mat = covar_mat[non_zero_dir_idx]
-        node_dir = node_dir[non_zero_dir_idx]
-        if covar_mat.shape[0] == 0:
-            return None, None, None, None
-
-        if len(covar_mat.shape) == 3:
-            u, s, vh = torch.linalg.svd(covar_mat)
-            pred_dir = u[:, :, 0]
-        else:
-            # grad on pos
-            pred_dir = covar_mat
-            s = covar_mat
-
-        true_dir = node_dir[:, :pred_dir.shape[1]]
-        angles = torch.rad2deg(torch.arccos(F.cosine_similarity(pred_dir, true_dir, dim=1).clamp(-1+1e-8, +1-1e-8)))
-        angles[angles > 90] = 180 - angles[angles > 90]
-        avg_angles = angles.mean().reshape(1)
-
-        avg_eigen_ratio = (s[:, 1] / s[:, 0]).mean().reshape(1)
-    else:
-        return None, None, None, None
-    return avg_angles, angles, avg_eigen_ratio, (pred_dir, true_dir)
+    return torch.tensor(precision_at_k), torch.tensor(precision_at_2k), torch.tensor(precision_at_3k), torch.tensor(avg_auroc)
 
 
 def log(*args):
@@ -245,8 +194,6 @@ def update_and_save_best_epoch_res(baseline, train_res, valid_res, test_res, met
                     #    'metric/best_x_prec@k_train': train_res[5], 'metric/best_x_prec@k_valid': valid_res[5], 'metric/best_x_prec@k_test': test_res[5],
                     #    'metric/best_x_prec@2k_train': train_res[6], 'metric/best_x_prec@2k_valid': valid_res[6], 'metric/best_x_prec@2k_test': test_res[6],
                     #    'metric/best_x_prec@3k_train': train_res[7], 'metric/best_x_prec@3k_valid': valid_res[7], 'metric/best_x_prec@3k_test': test_res[7],
-                    #    'metric/best_angle_train': train_res[8], 'metric/best_angle_valid': valid_res[8], 'metric/best_angle_test': test_res[8],
-                    #    'metric/best_eigen_train': train_res[9], 'metric/best_eigen_valid': valid_res[9], 'metric/best_eigen_test': test_res[9]}
 
         if model_dir is not None:
             os.makedirs(model_dir, exist_ok=True)
