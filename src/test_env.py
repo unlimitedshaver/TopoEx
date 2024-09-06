@@ -21,146 +21,223 @@ if __name__ == "__main__":
 
 
 
+
+
+# import time
+# import numpy
+# import gudhi as gd
+# from pylab import *
 # import torch
-# import torch.nn as nn
-# from torch_geometric.nn import knn_graph, radius_graph
-# from torch_geometric.nn import global_mean_pool, global_add_pool, global_max_pool
-
-# from backbones import DGCNN, PointTransformer, EGNN
-# from utils import ExtractorMLP, MLP, CoorsNorm
 
 
-# class Model(nn.Module):
-#     def __init__(self, model_name, model_config, method_name, method_config, dataset):
-#         super().__init__()
-#         # assert dataset.dataset_name in ['tau3mu', 'plbind', 'synmol'] or 'actstrack' in dataset.dataset_name
-#         self.dataset = dataset
-#         self.dataset_name = dataset.name
-#         self.method_name = method_name
-#         self.one_encoder = method_config.get('one_encoder', True)
-#         self.covar_dim = method_config.get('covar_dim', None)
-#         self.pos_coef = method_config.get('pos_coef', None)
-#         self.kr = method_config.get('kr', None)
-#         if method_name == 'psat':
-#             assert self.pos_coef is not None and self.kr is not None
+# def compute_dgm_force(lh_dgm, gt_dgm, pers_thresh=0.03, pers_thresh_perfect=0.99, do_return_perfect=False):
+#     """
+#     Compute the persistent diagram of the image
 
-#         out_dim = 1 if dataset.num_classes == 2 else dataset.num_classes
-#         hidden_size = model_config['hidden_size']
-#         dropout_p = model_config['dropout_p']
-#         norm_type = model_config['norm_type']
-#         act_type = model_config['act_type']
+#     Args:
+#         lh_dgm: likelihood persistent diagram.
+#         gt_dgm: ground truth persistent diagram.
+#         pers_thresh: Persistent threshold, which also called dynamic value, which measure the difference.
+#         between the local maximum critical point value with its neighouboring minimum critical point value.
+#         The value smaller than the persistent threshold should be filtered. Default: 0.03
+#         pers_thresh_perfect: The distance difference between two critical points that can be considered as
+#         correct match. Default: 0.99
+#         do_return_perfect: Return the persistent point or not from the matching. Default: False
 
-#         if model_name == 'dgcnn':
-#             Model = DGCNN
-#         elif model_name == 'pointtrans':
-#             Model = PointTransformer
-#         elif model_name == 'egnn':
-#             Model = EGNN
+#     Returns:
+#         force_list: The matching between the likelihood and ground truth persistent diagram
+#         idx_holes_to_fix: The index of persistent points that requires to fix in the following training process
+#         idx_holes_to_remove: The index of persistent points that require to remove for the following training
+#         process
+
+#     """
+#     lh_pers = abs(lh_dgm[:, 1] - lh_dgm[:, 0])
+#     if (gt_dgm.shape[0] == 0):
+#         gt_pers = None;
+#         gt_n_holes = 0;
+#     else:
+#         gt_pers = gt_dgm[:, 1] - gt_dgm[:, 0]
+#         gt_n_holes = gt_pers.size  # number of holes in gt
+
+#     if (gt_pers is None or gt_n_holes == 0):
+#         idx_holes_to_fix = list();
+#         idx_holes_to_remove = list(set(range(lh_pers.size)))
+#         idx_holes_perfect = list();
+#     else:
+#         # check to ensure that all gt dots have persistence 1
+#         tmp = gt_pers > pers_thresh_perfect
+
+#         # get "perfect holes" - holes which do not need to be fixed, i.e., find top
+#         # lh_n_holes_perfect indices
+#         # check to ensure that at least one dot has persistence 1; it is the hole
+#         # formed by the padded boundary
+#         # if no hole is ~1 (ie >.999) then just take all holes with max values
+#         tmp = lh_pers > pers_thresh_perfect  # old: assert tmp.sum() >= 1
+#         lh_pers_sorted_indices = np.argsort(lh_pers)[::-1]
+#         if np.sum(tmp) >= 1:
+#             lh_n_holes_perfect = tmp.sum()
+#             idx_holes_perfect = lh_pers_sorted_indices[:lh_n_holes_perfect];
 #         else:
-#             raise NotImplementedError
+#             idx_holes_perfect = list();
 
-#         if model_config['pool'] == 'mean':
-#             self.pool = global_mean_pool
-#         elif model_config['pool'] == 'max':
-#             self.pool = global_max_pool
-#         elif model_config['pool'] == 'add':
-#             self.pool = global_add_pool
-#         else:
-#             raise NotImplementedError
+#         # find top gt_n_holes indices
+#         idx_holes_to_fix_or_perfect = lh_pers_sorted_indices[:gt_n_holes];
 
-#         dataset.feat_info['edge_categorical_feat'], dataset.feat_info['edge_scalar_feat'] = [], dataset.pos_dim+1
-#         if self.dataset_name == 'plbind':
-#             dataset.feat_info_lig['edge_categorical_feat'], dataset.feat_info_lig['edge_scalar_feat'] = [], dataset.pos_dim+1
+#         # the difference is holes to be fixed to perfect
+#         idx_holes_to_fix = list(
+#             set(idx_holes_to_fix_or_perfect) - set(idx_holes_perfect))
 
-#         raw_pos_dim = dataset.pos_dim
-#         if dataset.feature_type == 'only_pos':
-#             dataset.x_dim = 0
-#             dataset.x_lig_dim = 0
-#         elif dataset.feature_type == 'only_x':
-#             dataset.pos_dim = 0
-#             dataset.pos_lig_dim = 0
-#         elif dataset.feature_type == 'only_ones':
-#             dataset.x_dim = 0
-#             dataset.x_lig_dim = 0
-#             dataset.pos_dim = 0
-#             dataset.pos_lig_dim = 0
-#         else:
-#             assert dataset.feature_type == 'both_x_pos'
+#         # remaining holes are all to be removed
+#         idx_holes_to_remove = lh_pers_sorted_indices[gt_n_holes:];
 
-#         aux_info = {'raw_pos_dim': raw_pos_dim, 'dataset_name': dataset.dataset_name}
-#         self.coors_norm = CoorsNorm()
-#         self.mlp_out = MLP([hidden_size, hidden_size * 2, hidden_size, out_dim], dropout_p, norm_type, act_type)
+#     # only select the ones whose persistence is large enough
+#     # set a threshold to remove meaningless persistence dots
+#     pers_thd = pers_thresh
+#     idx_valid = np.where(lh_pers > pers_thd)[0]
+#     idx_holes_to_remove = list(
+#         set(idx_holes_to_remove).intersection(set(idx_valid)))
+
+#     force_list = np.zeros(lh_dgm.shape)
     
-#         self.model = Model(dataset.x_dim, dataset.pos_dim, model_config, dataset.feat_info, aux_info=aux_info)
-#         # self.emb_model = Model(dataset.x_dim, dataset.pos_dim, model_config, dataset.feat_info, aux_info=aux_info) if not self.one_encoder else None
-        
+#     # push each hole-to-fix to (0,1)
+#     force_list[idx_holes_to_fix, 0] = 0 - lh_dgm[idx_holes_to_fix, 0]
+#     force_list[idx_holes_to_fix, 1] = 1 - lh_dgm[idx_holes_to_fix, 1]
 
-#         self.dim_mapping = nn.Linear(1, 8)
-#         self.message_weights = ExtractorMLP(8, model_config, False, out_dim=1)
+#     # push each hole-to-remove to (0,1)
+#     force_list[idx_holes_to_remove, 0] = lh_pers[idx_holes_to_remove] / \
+#                                          math.sqrt(2.0)
+#     force_list[idx_holes_to_remove, 1] = -lh_pers[idx_holes_to_remove] / \
+#                                          math.sqrt(2.0)
 
-#     def forward(self, data, node_attn=None, edge_attn=None, node_noise=None):
-#         x, pos, edge_index, edge_attr = self.calc_geo_feat(data.x, data.pos, data.batch, node_noise, self.method_name)
+#     if (do_return_perfect):
+#         return force_list, idx_holes_to_fix, idx_holes_to_remove, idx_holes_perfect
 
-#         edge_attn = edge_attn
+#     return force_list, idx_holes_to_fix, idx_holes_to_remove
 
-#         emb = self.model(x, pos, edge_attr, edge_index, data.batch, edge_attn=edge_attn, node_attn=node_attn)
-#         pool_out = self.pool(emb, batch=data.batch)
-        
-#         return self.mlp_out(pool_out)
+# def getCriticalPoints(likelihood):
+#     """
+#     Compute the critical points of the image (Value range from 0 -> 1)
 
-    
+#     Args:
+#         likelihood: Likelihood image from the output of the neural networks
 
-    # def get_message_weights(self, x, pos, edge_index, batch):
-    #     col, row = edge_index
-    #     dist = torch.norm(pos[col] - pos[row], dim=1, p=2, keepdim=True)
-    #     input_feat = self.dim_mapping(dist)
-    #     return self.message_weights(input_feat, batch[col]).sigmoid()
+#     Returns:
+#         pd_lh:  persistence diagram.
+#         bcp_lh: Birth critical points.
+#         dcp_lh: Death critical points.
+#         Bool:   Skip the process if number of matching pairs is zero.
 
-    # def calc_geo_feat(self, x, pos, batch, node_noise, method_name, is_lig=False):
-    #     if 'actstrack' in self.dataset_name:
-    #         pos = pos / 2955.5000 * 100 if self.pos_coef is None else pos / 2955.5000 * self.pos_coef
-    #         pos = self.add_noise(pos, node_noise)
+#     """
+#     lh = 1 - likelihood
+#     lh_vector = np.asarray(lh).flatten()
 
-    #         pos = self.coors_norm(pos)
-    #         edge_index = knn_graph(pos, k=5 if self.kr is None else int(self.kr), batch=batch, loop=True)
-    #         edge_attr = self.calc_edge_attr(pos, edge_index)
+#     lh_cubic = gd.CubicalComplex(
+#         dimensions=[lh.shape[0], lh.shape[1]],
+#         top_dimensional_cells=lh_vector
+#     )
 
-    #     elif self.dataset_name == 'tau3mu':
-    #         pos = pos * 1.0 if self.pos_coef is None else pos * self.pos_coef
-    #         pos = self.add_noise(pos, node_noise)
+#     Diag_lh = lh_cubic.persistence(homology_coeff_field=2, min_persistence=0)
+#     pairs_lh = lh_cubic.cofaces_of_persistence_pairs()
 
-    #         edge_index = radius_graph(pos, r=1.0 if self.kr is None else self.kr * self.pos_coef, loop=True, batch=batch)
-    #         edge_attr = self.calc_edge_attr(pos, edge_index)
+#     # If the paris is 0, return False to skip
+#     if (len(pairs_lh[0])==0): return 0, 0, 0, False
 
-    #     elif self.dataset_name == 'synmol':
-    #         pos = pos * 5.0 if self.pos_coef is None else pos * self.pos_coef
-    #         pos = self.add_noise(pos, node_noise)
+#     # return persistence diagram, birth/death critical points
+#     pd_lh = numpy.array([[lh_vector[pairs_lh[0][0][i][0]], lh_vector[pairs_lh[0][0][i][1]]] for i in range(len(pairs_lh[0][0]))])
+#     bcp_lh = numpy.array([[pairs_lh[0][0][i][0]//lh.shape[1], pairs_lh[0][0][i][0]%lh.shape[1]] for i in range(len(pairs_lh[0][0]))])
+#     dcp_lh = numpy.array([[pairs_lh[0][0][i][1]//lh.shape[1], pairs_lh[0][0][i][1]%lh.shape[1]] for i in range(len(pairs_lh[0][0]))])
 
-    #         edge_index = knn_graph(pos, k=5 if self.kr is None else int(self.kr), batch=batch, loop=True)
-    #         edge_attr = self.calc_edge_attr(pos, edge_index)
+#     return pd_lh, bcp_lh, dcp_lh, True
 
-    #     elif self.dataset_name == 'plbind':
-    #         if is_lig:
-    #             edge_index = radius_graph(pos, r=2.0, loop=True, batch=batch)
-    #             edge_attr = self.calc_edge_attr(pos, edge_index)
-    #         else:
-    #             pos = pos * 1.0 if self.pos_coef is None else pos * self.pos_coef
-    #             pos = self.add_noise(pos, node_noise)
+# def getTopoLoss(likelihood_tensor, gt_tensor, topo_size=100):
+#     """
+#     Calculate the topology loss of the predicted image and ground truth image 
+#     Warning: To make sure the topology loss is able to back-propagation, likelihood 
+#     tensor requires to clone before detach from GPUs. In the end, you can hook the
+#     likelihood tensor to GPUs device.
 
-    #             edge_index = knn_graph(pos, k=5 if self.kr is None else int(self.kr), flow='target_to_source', loop=True, batch=batch)
-    #             edge_attr = self.calc_edge_attr(pos, edge_index)
+#     Args:
+#         likelihood_tensor:   The likelihood pytorch tensor.
+#         gt_tensor        :   The groundtruth of pytorch tensor.
+#         topo_size        :   The size of the patch is used. Default: 100
 
-    #     return x, pos, edge_index, edge_attr
+#     Returns:
+#         loss_topo        :   The topology loss value (tensor)
 
-    # def add_noise(self, pos, node_noise):
-    #     if node_noise is not None:
-    #         pos[:, :self.covar_dim] = pos[:, :self.covar_dim] + node_noise
-    #     return pos
+#     """
 
-    # def calc_edge_attr(self, pos, edge_index):
-    #     row, col = edge_index
-    #     rel_dist = torch.norm(pos[row] - pos[col], dim=1, p=2, keepdim=True)
-    #     coord_diff = pos[row] - pos[col]
-    #     edge_dir = coord_diff / (rel_dist + 1e-6)
-    #     edge_attr = torch.cat([rel_dist, edge_dir], dim=1)
-    #     return edge_attr
+#     likelihood = torch.sigmoid(likelihood_tensor).clone()
+#     gt = gt_tensor.clone()
+
+#     likelihood = torch.squeeze(likelihood).cpu().detach().numpy()
+#     gt = torch.squeeze(gt).cpu().detach().numpy()
+
+#     topo_cp_weight_map = np.zeros(likelihood.shape)
+#     topo_cp_ref_map = np.zeros(likelihood.shape)
+
+#     for y in range(0, likelihood.shape[0], topo_size):
+#         for x in range(0, likelihood.shape[1], topo_size):
+
+#             lh_patch = likelihood[y:min(y + topo_size, likelihood.shape[0]),
+#                          x:min(x + topo_size, likelihood.shape[1])]
+#             gt_patch = gt[y:min(y + topo_size, gt.shape[0]),
+#                          x:min(x + topo_size, gt.shape[1])]
+
+#             if(np.min(lh_patch) == 1 or np.max(lh_patch) == 0): continue
+#             if(np.min(gt_patch) == 1 or np.max(gt_patch) == 0): continue
+
+#             # Get the critical points of predictions and ground truth
+#             pd_lh, bcp_lh, dcp_lh, pairs_lh_pa = getCriticalPoints(lh_patch)
+#             pd_gt, bcp_gt, dcp_gt, pairs_lh_gt = getCriticalPoints(gt_patch)
+
+#             # If the pairs not exist, continue for the next loop
+#             if not(pairs_lh_pa): continue
+#             if not(pairs_lh_gt): continue
+
+#             force_list, idx_holes_to_fix, idx_holes_to_remove = compute_dgm_force(pd_lh, pd_gt, pers_thresh=0.03)
+
+#             if (len(idx_holes_to_fix) > 0 or len(idx_holes_to_remove) > 0):
+#                 for hole_indx in idx_holes_to_fix:
+#                     if (int(bcp_lh[hole_indx][0]) >= 0 and int(bcp_lh[hole_indx][0]) < likelihood.shape[0] and int(
+#                             bcp_lh[hole_indx][1]) >= 0 and int(bcp_lh[hole_indx][1]) < likelihood.shape[1]):
+#                         topo_cp_weight_map[y + int(bcp_lh[hole_indx][0]), x + int(
+#                             bcp_lh[hole_indx][1])] = 1  # push birth to 0 i.e. min birth prob or likelihood
+#                         topo_cp_ref_map[y + int(bcp_lh[hole_indx][0]), x + int(bcp_lh[hole_indx][1])] = 0
+#                     if (int(dcp_lh[hole_indx][0]) >= 0 and int(dcp_lh[hole_indx][0]) < likelihood.shape[
+#                         0] and int(dcp_lh[hole_indx][1]) >= 0 and int(dcp_lh[hole_indx][1]) <
+#                             likelihood.shape[1]):
+#                         topo_cp_weight_map[y + int(dcp_lh[hole_indx][0]), x + int(
+#                             dcp_lh[hole_indx][1])] = 1  # push death to 1 i.e. max death prob or likelihood
+#                         topo_cp_ref_map[y + int(dcp_lh[hole_indx][0]), x + int(dcp_lh[hole_indx][1])] = 1
+#                 for hole_indx in idx_holes_to_remove:
+#                     if (int(bcp_lh[hole_indx][0]) >= 0 and int(bcp_lh[hole_indx][0]) < likelihood.shape[
+#                         0] and int(bcp_lh[hole_indx][1]) >= 0 and int(bcp_lh[hole_indx][1]) <
+#                             likelihood.shape[1]):
+#                         topo_cp_weight_map[y + int(bcp_lh[hole_indx][0]), x + int(
+#                             bcp_lh[hole_indx][1])] = 1  # push birth to death  # push to diagonal
+#                         if (int(dcp_lh[hole_indx][0]) >= 0 and int(dcp_lh[hole_indx][0]) < likelihood.shape[
+#                             0] and int(dcp_lh[hole_indx][1]) >= 0 and int(dcp_lh[hole_indx][1]) <
+#                                 likelihood.shape[1]):
+#                             topo_cp_ref_map[y + int(bcp_lh[hole_indx][0]), x + int(bcp_lh[hole_indx][1])] = \
+#                                 lh_patch[int(dcp_lh[hole_indx][0]), int(dcp_lh[hole_indx][1])]
+#                         else:
+#                             topo_cp_ref_map[y + int(bcp_lh[hole_indx][0]), x + int(bcp_lh[hole_indx][1])] = 1
+#                     if (int(dcp_lh[hole_indx][0]) >= 0 and int(dcp_lh[hole_indx][0]) < likelihood.shape[
+#                         0] and int(dcp_lh[hole_indx][1]) >= 0 and int(dcp_lh[hole_indx][1]) <
+#                             likelihood.shape[1]):
+#                         topo_cp_weight_map[y + int(dcp_lh[hole_indx][0]), x + int(
+#                             dcp_lh[hole_indx][1])] = 1  # push death to birth # push to diagonal
+#                         if (int(bcp_lh[hole_indx][0]) >= 0 and int(bcp_lh[hole_indx][0]) < likelihood.shape[
+#                             0] and int(bcp_lh[hole_indx][1]) >= 0 and int(bcp_lh[hole_indx][1]) <
+#                                 likelihood.shape[1]):
+#                             topo_cp_ref_map[y + int(dcp_lh[hole_indx][0]), x + int(dcp_lh[hole_indx][1])] = \
+#                                 lh_patch[int(bcp_lh[hole_indx][0]), int(bcp_lh[hole_indx][1])]
+#                         else:
+#                             topo_cp_ref_map[y + int(dcp_lh[hole_indx][0]), x + int(dcp_lh[hole_indx][1])] = 0
+
+#     topo_cp_weight_map = torch.tensor(topo_cp_weight_map, dtype=torch.float).cuda()
+#     topo_cp_ref_map = torch.tensor(topo_cp_ref_map, dtype=torch.float).cuda()
+
+#     # Measuring the MSE loss between predicted critical points and reference critical points
+#     loss_topo = (((likelihood_tensor * topo_cp_weight_map) - topo_cp_ref_map) ** 2).sum()
+#     return loss_topo

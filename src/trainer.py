@@ -40,9 +40,7 @@ def eval_one_batch(baseline, optimizer, data, epoch, warmup, phase, method_name)
         assert optimizer is None
         baseline.extractor.eval() if hasattr(baseline, 'extractor') else None
         baseline.clf.eval()
-
-        # calc angle
-        # do_sampling = True if phase == 'valid' and method_name == 'lri_gaussian' else False
+        baseline.readout.eval()##
 
         # BernMaskP
         do_sampling = False
@@ -54,6 +52,7 @@ def eval_one_batch(baseline, optimizer, data, epoch, warmup, phase, method_name)
 def train_one_batch(baseline, optimizer, data, epoch, warmup, phase, method_name):
     baseline.extractor.train() if hasattr(baseline, 'extractor') else None
     baseline.clf.train() if (method_name != 'bernmask_p' or warmup) else baseline.clf.eval()
+    baseline.readout.train()##
 
     loss, loss_dict, org_clf_logits, masked_clf_logits, node_attn, edge_attn, cell_attn = baseline.forward_pass(data, epoch, warmup=warmup, do_sampling=True)
     optimizer.zero_grad()

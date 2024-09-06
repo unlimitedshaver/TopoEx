@@ -143,29 +143,37 @@ class PershomReadout(nn.Module):
 
         # self.ldgm_0_up = SLayerRationalHat(num_struct_elements, 2, radius_init=0.1)
         # self.ldgm_0_down = SLayerRationalHat(num_struct_elements, 2, radius_init=0.1)
-        self.ldgm_cc = SLayerRationalHat(num_struct_elements, 2,
-                                         radius_init=0.1)
+        # self.ldgm_cc = SLayerRationalHat(num_struct_elements, 2,
+        #                                  radius_init=0.1)
         self.ldgm_h1 = SLayerRationalHat(num_struct_elements, 2,
                                          radius_init=0.1)
 
 
-    def forward(self, h_0_up, h_0_down, h_0_cc, h_1):
-        tmp = []
+    def forward(self, beta_0_up, beta_0_down, beta0_ext, beta1_ext):
+        
+        # input_device = beta_0_up[0].device
+        ## transform coordinates
+        x_0_ex = [beta[:,0] for beta in beta0_ext]
+        y_0_ex = [beta[:,1] for beta in beta0_ext]
+        beta0_ext_1sthalf = [torch.stack([x_0, 1-x_0], dim=1) for x_0 in x_0_ex]
+        beta0_ext_2sthalf = [torch.stack([y_0, 1-y_0], dim=1) for y_0 in y_0_ex]
 
-        # tmp.append(self.ldgm_0_up(h_0_up))
-        # tmp.append(self.ldgm_0_down(h_0_down))
-        tmp.append(self.ldgm_cc(h_0_cc))
-        tmp.append(self.ldgm_h1(h_1))
+        x_1_ex = [beta[:,0] for beta in beta1_ext]
+        y_1_ex = [beta[:,1] for beta in beta1_ext]
+        beta1_ext_1sthalf = [torch.stack([x_1, 1-x_1], dim=1) for x_1 in x_1_ex]
+        beta1_ext_2sthalf = [torch.stack([y_1, 1-y_1], dim=1) for y_1 in y_1_ex]
+        
+        ## combine
+        ##ph_down = beta_0_down || beta0_ext_1sthalf || beta1_ext_1sthalf
+        ##ph_up = beta_0_up || beta0_ext_2sthalf || beta1_ext_2sthalf
+        ph_down = [torch.cat((beta_0_down[i], beta0_ext_1sthalf[i], beta1_ext_1sthalf[i]), dim=0) for i in range(len(beta_0_up))]
+        ph_up = [torch.cat((beta_0_up[i], beta0_ext_2sthalf[i], beta1_ext_2sthalf[i]), dim=0) for i in range(len(beta_0_up))]
 
-        tpl = []
-        # tpl.append(torch.norm(self.ldgm_0_up.centers, p=2))
-        # tpl.append(torch.norm(self.ldgm_0_down.centers, p=2))
-        tpl.append(-torch.norm(self.ldgm_cc.centers, p=2))  ##强调提高pow(2)
-        tpl.append(-torch.norm(self.ldgm_h1.centers, p=2))
-        tpl = sum(tpl)
+        ph_up_out = self.ldgm_h1(ph_up)
+        ph_down_out = self.ldgm_h1(ph_down)
 
-        # import pdb
-        # pdb.set_trace()
+        # MSE
+        tpl = -((ph_up_out - ph_down_out)**2).sum()
 
-        x = torch.cat(tmp, dim=1)
-        return x, tpl
+        x = torch.cat([ph_up_out, ph_down_out], dim=1)
+        return x,tpl

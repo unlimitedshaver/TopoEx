@@ -197,11 +197,11 @@ def update_and_save_best_epoch_res(baseline, train_res, valid_res, test_res, met
 
         if model_dir is not None:
             os.makedirs(model_dir, exist_ok=True)
-            save_checkpoint(baseline, model_dir, model_name='model' if not warmup else 'wp_model')
+            save_checkpoint(baseline, model_dir, model_name='model' )
 
     if model_dir is not None:
         os.makedirs(model_dir, exist_ok=True)
-        save_checkpoint(baseline, model_dir, model_name=f'model_{epoch}' if not warmup else f'wp_model_{epoch}')
+        save_checkpoint(baseline, model_dir, model_name=f'model_{epoch}')
 
     if writer is not None and not warmup:
         for metric, value in metric_dict.items():
