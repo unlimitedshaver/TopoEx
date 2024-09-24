@@ -41,6 +41,10 @@ def eval_one_batch(baseline, optimizer, data, epoch, warmup, phase, method_name)
         baseline.extractor.eval() if hasattr(baseline, 'extractor') else None
         baseline.clf.eval()
         baseline.readout.eval()##
+        baseline.gaus.eval() ##
+
+        # baseline.read_ph(data) ##
+        # exit(1)
 
         # BernMaskP
         do_sampling = False
@@ -53,6 +57,7 @@ def train_one_batch(baseline, optimizer, data, epoch, warmup, phase, method_name
     baseline.extractor.train() if hasattr(baseline, 'extractor') else None
     baseline.clf.train() if (method_name != 'bernmask_p' or warmup) else baseline.clf.eval()
     baseline.readout.train()##
+    baseline.gaus.train()##
 
     loss, loss_dict, org_clf_logits, masked_clf_logits, node_attn, edge_attn, cell_attn = baseline.forward_pass(data, epoch, warmup=warmup, do_sampling=True)
     optimizer.zero_grad()
@@ -296,12 +301,12 @@ def visualize_results(gsat, all_viz_set, test_set, num_viz_samples, dataset_name
         viz_set = test_set[idx]
         data = next(iter(DataLoader(viz_set, batch_size=len(idx), shuffle=False)))
         # data = process_data(data, use_edge_attr)
-        _, _, _, _, batch_att, _ = eval_one_batch(gsat, optimizer, data.to(gsat.device), 500, False, None, method_name)
+        _, _, _, node_attn, batch_att, _ = eval_one_batch(gsat, optimizer, data.to(gsat.device), 500, False, None, method_name)
         #baseline, optimizer, data, epoch, warmup, phase, method_name
 
         for i in tqdm(range(len(viz_set))):
             mol_type, coor = None, None
-            if dataset_name == 'mutag':
+            if dataset_name == 'muttag': ###
                 node_dict = {0: 'C', 1: 'O', 2: 'Cl', 3: 'H', 4: 'N', 5: 'F', 6: 'Br', 7: 'S', 8: 'P', 9: 'I', 10: 'Na', 11: 'K', 12: 'Li', 13: 'Ca'}
                 mol_type = {k: node_dict[v.item()] for k, v in enumerate(viz_set[i]._stores['node_type'])}
             elif dataset_name == 'Graph-SST2':
@@ -317,6 +322,7 @@ def visualize_results(gsat, all_viz_set, test_set, num_viz_samples, dataset_name
                 raise NotImplementedError
 
             node_subset = data.cochains[0].batch == i
+            node_att = node_attn[node_subset.cpu()] ##
             ##
             second_row = data.cochains[1].boundary_index[1]
             res = {}
@@ -341,7 +347,7 @@ def visualize_results(gsat, all_viz_set, test_set, num_viz_samples, dataset_name
             _, edge_mask = subgraph(node_subset.cpu(), data.cochains[0].upper_index.cpu(), edge_attr=torch.tensor(batch_attn))#edge_attr=batch_att
 
             node_label = viz_set[i].node_label.reshape(-1) #if viz_set[i].get('node_label', None) is not None else torch.zeros(viz_set[i].x.shape[0])
-            visualize_a_graph(viz_set[i].cochains[0].upper_index, edge_mask, node_label, dataset_name, axes[class_idx, i], norm=True, mol_type=mol_type, coor=coor)
+            visualize_a_graph(viz_set[i].cochains[0].upper_index, edge_mask, node_label, dataset_name, axes[class_idx, i], norm=True, mol_type=mol_type, coor=coor, node_attn=node_att)
             # axes[class_idx, i].axis('off')
         fig.tight_layout()
 
@@ -356,10 +362,13 @@ def visualize_results(gsat, all_viz_set, test_set, num_viz_samples, dataset_name
         fig.add_artist(line)
 
 
-def visualize_a_graph(edge_index, edge_att, node_label, dataset_name, ax, coor=None, norm=False, mol_type=None, nodesize=300):
+def visualize_a_graph(edge_index, edge_att, node_label, dataset_name, ax, coor=None, norm=False, mol_type=None, nodesize=300, node_attn=None):
     if norm:  # for better visualization
         edge_att = edge_att*10**5
         edge_att = (edge_att - edge_att.min()) / (edge_att.max() - edge_att.min() + 1e-6)
+
+    if node_attn is not None:
+        node_attn = min_max_normalize(node_attn)
 
     if mol_type is None or dataset_name == 'Graph-SST2':
         atom_colors = {0: '#E49D1C', 1: '#FF5357', 2: '#a1c569', 3: '#69c5ba'}
@@ -371,8 +380,10 @@ def visualize_a_graph(edge_index, edge_att, node_label, dataset_name, ax, coor=N
         element_idxs = {k: Chem.PeriodicTable.GetAtomicNumber(Chem.GetPeriodicTable(), v) for k, v in mol_type.items()}
         node_colors = [node_color[(v - 1) % len(node_color)] for k, v in element_idxs.items()]
 
-    data = Data(edge_index=edge_index, att=edge_att, y=node_label, num_nodes=node_label.size(0)).to('cpu')
-    G = to_networkx(data, node_attrs=['y'], edge_attrs=['att'])
+    data = Data(edge_index=edge_index, att=edge_att, y=node_label, num_nodes=node_label.size(0), node_attn=node_attn).to('cpu')
+    G = to_networkx(data, node_attrs=['y', 'node_attn'], edge_attrs=['att'])
+
+    # attention_values = [attr['node_attn'] for _, attr in G.nodes(data=True)]
 
     # calculate Graph positions
     if coor is None:
@@ -397,11 +408,22 @@ def visualize_a_graph(edge_index, edge_att, node_label, dataset_name, ax, coor=N
         nx.draw_networkx_labels(G, pos, mol_type, ax=ax)
 
     if dataset_name != 'Graph-SST2':
+
+        ##
+        labels = {node: f"{attr['node_attn']:.2f}" for node, attr in G.nodes(data=True)}
+        nx.draw_networkx_labels(G, pos, labels=labels, font_size=10, font_color='black', ax=ax)
+        ##
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=nodesize, ax=ax)
         nx.draw_networkx_edges(G, pos, width=1, edge_color='gray', arrows=False, alpha=0.1, ax=ax)
     else:
         nx.draw_networkx_edges(G, pos, width=1, edge_color='gray', arrows=False, alpha=0.1, ax=ax, connectionstyle='arc3,rad=0.4')
 
+def min_max_normalize(attn):
+        attn_min = attn.min()
+        attn_max = attn.max()
+        epsilon = 1e-8
+        attn_normalized = (attn - attn_min) / (attn_max - attn_min + epsilon)
+        return attn_normalized
 
 
 if __name__ == '__main__':

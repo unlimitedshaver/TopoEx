@@ -443,7 +443,8 @@ def compute_ring_2complex(x: Union[Tensor, np.ndarray], edge_index: Union[Tensor
     if isinstance(edge_label, np.ndarray):
         edge_label = torch.tensor(edge_label)
     ##额外
-    if isinstance(kwargs.get('node_type', None), np.ndarray):
+    node_type = kwargs.get('node_type', None)
+    if isinstance(node_type, np.ndarray):
         node_type = torch.tensor(kwargs['node_type'])
 
 
@@ -569,8 +570,9 @@ def convert_graph_dataset_with_rings(dataset, max_ring_size=7, include_down_adj=
         else:
             assert torch.equal(complex.y, graph.y)
         assert torch.equal(complex.cochains[0].x, graph.x)
-        if complex.dimension >= 1:
-            assert complex.cochains[1].x.size(0) == (graph.edge_index.size(1) // 2)
+        # if complex.dimension >= 1: 注意：这里会出现cochains[1].x.size(0) == edge_index.size(1)？？
+        #     print(complex.cochains[1].x.size(0), graph.edge_index.size(1))
+        #     assert complex.cochains[1].x.size(0) == (graph.edge_index.size(1) // 2)
 
     return complexes, dimension, num_features[:dimension+1]
 

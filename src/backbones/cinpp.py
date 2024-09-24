@@ -71,6 +71,8 @@ class OGBEmbedCINpp(torch.nn.Module):
             self.lin1s.append(Linear(hidden, final_hidden_multiplier * hidden))
         self.lin2 = Linear(final_hidden_multiplier * hidden, out_size)
 
+        self.lin_ph = Linear(final_hidden_multiplier * hidden + 64, final_hidden_multiplier * hidden) ## 64 = num_structure_elements * 2 *2
+
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
@@ -106,7 +108,7 @@ class OGBEmbedCINpp(torch.nn.Module):
             #     for k in range(len(xs)):
             #         res[f"layer{c}_{k}"] = xs[k]
 
-        xs = pool_complex(xs, emb_data, self.max_dim, self.readout)
+        xs = pool_complex(xs, emb_data, self.max_dim, self.readout)  
         # Select the dimensions we want at the end.
         xs = [xs[i] for i in self.readout_dims]
 
@@ -131,12 +133,10 @@ class OGBEmbedCINpp(torch.nn.Module):
         else:
             raise NotImplementedError
 
-        ## cat(dim=1)
+        ## cat ph_x
         if ph_x is not None:
-            ph_x = ph_x.unsqueeze(1)
-            x = x.unsqueeze(1)
             x = torch.cat((ph_x, x), dim=1)
-            x = x.mean(dim=1)
+            x = self.lin_ph(x)
 
         if self.apply_dropout_before not in ['lin1', 'final_readout']:
             x = F.dropout(x, p=self.dropout_rate, training=self.training)
@@ -151,7 +151,8 @@ class OGBEmbedCINpp(torch.nn.Module):
     def __repr__(self):
         return self.__class__.__name__
     
-    def get_emb(self, data: ComplexBatch):    ##get_emb断在global_add_pool之前
+    def get_emb(self, data: ComplexBatch):    ##xs断在global_add_pool之前
+        act = get_nonlinearity(self.nonlinearity, return_module=False)
         xs = None
 
         # Embed and populate higher-levels 【populate：填充】
@@ -172,10 +173,34 @@ class OGBEmbedCINpp(torch.nn.Module):
             # Apply dropout on the output of the conv layer
             for i, x in enumerate(xs):
                 xs[i] = F.dropout(xs[i], p=self.dropout_rate, training=self.training)
-            # emb_data.set_xs(xs)
+            emb_data.set_xs(xs)
+
+        cell_xs = xs
+        xs = pool_complex(xs, emb_data, self.max_dim, self.readout)
+        # Select the dimensions we want at the end.
+        xs = [xs[i] for i in self.readout_dims]
+
+        new_xs = []
+        for i, x in enumerate(xs):
+            if self.apply_dropout_before == 'lin1':
+                x = F.dropout(x, p=self.dropout_rate, training=self.training)
+            new_xs.append(act(self.lin1s[self.readout_dims[i]](x)))
+
+        x = torch.stack(new_xs, dim=0)
         
-        # return [emb, pool_out_lig], edge_index
-        return xs
+        if self.apply_dropout_before == 'final_readout':
+            x = F.dropout(x, p=self.dropout_rate, training=self.training)
+        if self.final_readout == 'mean':
+            x = x.mean(0)
+        elif self.final_readout == 'sum':       ###
+            x = x.sum(0)
+        else:
+            raise NotImplementedError
+        
+        if self.apply_dropout_before not in ['lin1', 'final_readout']:
+            graph_x = F.dropout(x, p=self.dropout_rate, training=self.training)
+        
+        return cell_xs, graph_x
     
 
 class CINppCochainConv(CochainMessagePassing):

@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from torch_geometric.nn import BatchNorm
+from torch.nn.parameter import Parameter
+import torch.nn.functional as F
 
 from torchPHext.torchex_PHext.nn import SLayerRationalHat, SLayerSquare, SLayerExponential
 
@@ -109,7 +111,7 @@ class FeatEncoder(torch.nn.Module):
         return x_embedding
 
 
-def get_optimizer(clf, extractor, optimizer_config, method_config, warmup, slayer):
+def get_optimizer(clf, extractor, optimizer_config, method_config, warmup, slayer, gaus):
     pred_lr = method_config['pred_lr']
     pred_wd = method_config['pred_wd']
 
@@ -127,9 +129,62 @@ def get_optimizer(clf, extractor, optimizer_config, method_config, warmup, slaye
     if warmup:
         return algo([{'params': clf_base_params}], lr=wp_lr, weight_decay=wp_wd)
     else:
-        return algo([{'params': extractor.parameters(), 'lr': attn_lr, 'weight_decay': attn_wd}, {'params': clf_base_params}, {'params':slayer.parameters(),'lr': emb_lr, 'weight_decay': emb_wd},
+        return algo([{'params': extractor.parameters(), 'lr': attn_lr, 'weight_decay': attn_wd}, {'params': clf_base_params},
+                     {'params':slayer.parameters(),'lr': emb_lr, 'weight_decay': emb_wd}, {'params':gaus.parameters(),'lr': 0.001},
                      {'params': clf_emb_model_params, 'lr': emb_lr, 'weight_decay': emb_wd}], lr=pred_lr, weight_decay=pred_wd)
     
+
+class PhAttn(nn.Module):
+    def __init__(self, hidden_size, num_heads=2, input_dim=4):
+        super(PhAttn, self).__init__()
+        assert hidden_size % num_heads == 0, "hidden_size must be divisible by num_heads"
+
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+
+        # define mutihead linear
+        self.ph_emb = nn.Linear(input_dim, hidden_size, bias=False)
+        self.graph_emb = nn.Linear(hidden_size, hidden_size, bias=False)
+
+    def forward(self, graph_x, ph_x):
+        """
+        param:
+            graph_x: [batch_size, hidden_size]
+            ph_x: [batch_size, num_structure, input_dim]
+        
+        return:
+            output: [batch_size, num_structure, input_dim]
+        """
+        batch_size, num_structure, input_dim = ph_x.size()
+        # muti-head Linear projection
+        ph_x_proj = self.ph_emb(ph_x)  # [batch_size, num_structure, hidden_size]
+        graph_x_proj = self.graph_emb(graph_x)  # [batch_size, hidden_size]
+        # reshape to muti-head format
+        ph_x_proj = ph_x_proj.view(batch_size, num_structure, self.num_heads, self.head_dim) # [batch_size, num_structure, num_heads, head_dim]
+        graph_x_proj = graph_x_proj.view(batch_size, self.num_heads, self.head_dim) # [batch_size, num_heads, head_dim]
+        # permute dimensions for matrix operations
+        ph_x_proj = ph_x_proj.permute(0, 2, 1, 3) # [batch_size, num_heads, num_structure, head_dim]
+        graph_x_proj = graph_x_proj.unsqueeze(-1) # [batch_size, num_heads, head_dim, 1]
+        # calculate attention score: head_dim*head_dim
+        attn_logits = torch.matmul(ph_x_proj, graph_x_proj).squeeze(-1) # [batch_size, num_heads, num_structure]
+        # softmax
+        attn = F.softmax(attn_logits, dim=-1)  # [batch_size, num_heads, num_structure]
+        # weighted sum, broadcast on num_heads
+        attn = attn.unsqueeze(-1) # [batch_size, num_heads, num_structure, 1]
+        weighted_x = attn * ph_x.unsqueeze(1)  # [batch_size, num_heads, num_structure, input_dim]
+        weighted_x = weighted_x.view(batch_size, self.num_heads, num_structure, input_dim) # [batch_size, num_heads, num_structure, input_dim]
+        # combine head
+        output = weighted_x.mean(dim=1) 
+        return output
+
+    # def orthogonal_loss(self, attn1, attn2):
+    #     # Compute orthogonal loss
+    #     dot_product = torch.sum(attn1 * attn2, dim=1)
+    #     orthogonal_loss = (dot_product ** 2).mean()
+    #     return orthogonal_loss
+
+
 
 class PershomReadout(nn.Module):
     def __init__(self,
@@ -147,33 +202,129 @@ class PershomReadout(nn.Module):
         #                                  radius_init=0.1)
         self.ldgm_h1 = SLayerRationalHat(num_struct_elements, 2,
                                          radius_init=0.1)
-
-
-    def forward(self, beta_0_up, beta_0_down, beta0_ext, beta1_ext):
+        self.ldgm_h2 = SLayerRationalHat(num_struct_elements, 2,
+                                         radius_init=0.1)
+        self.num_struct_elements = num_struct_elements
         
-        # input_device = beta_0_up[0].device
-        ## transform coordinates
-        x_0_ex = [beta[:,0] for beta in beta0_ext]
-        y_0_ex = [beta[:,1] for beta in beta0_ext]
-        beta0_ext_1sthalf = [torch.stack([x_0, 1-x_0], dim=1) for x_0 in x_0_ex]
-        beta0_ext_2sthalf = [torch.stack([y_0, 1-y_0], dim=1) for y_0 in y_0_ex]
+        self.ph_attn_1 = PhAttn(128) # 2*graph_x.shape[1]
+
+        self.ph_attn_2 = PhAttn(128) # 2*graph_x.shape[1]
+        
+    def do_ph_attn(self, ph, ldgm, graph_x, ph_attn):
+        ph_out, centers, radius = ldgm(ph) # [bs,num_struct], [num_struct,2], [num_struct]
+        ph_out = ph_out.unsqueeze(-1)
+        centers = centers.unsqueeze(0).expand(ph_out.size(0),self.num_struct_elements,2)
+        radius = radius.unsqueeze(0).unsqueeze(-1).expand(ph_out.size(0),self.num_struct_elements,1)
+        to_attn = torch.cat((ph_out,centers, radius), dim=-1)
+        return ph_attn(graph_x, to_attn)
+
+    def forward(self, beta_0_up, beta_0_down, beta0_ext, beta1_ext, graph_x, cyl):
+        
+        input_device = beta_0_up[0].device
+        # transform coordinates
+        # x_0_ex = [beta[:,0] for beta in beta0_ext]
+        # y_0_ex = [beta[:,1] for beta in beta0_ext]
+        # beta0_ext_1sthalf = [torch.stack([x_0, 1-x_0], dim=1) for x_0 in x_0_ex]
+        # beta0_ext_2sthalf = [torch.stack([y_0, 1-y_0], dim=1) for y_0 in y_0_ex]
 
         x_1_ex = [beta[:,0] for beta in beta1_ext]
         y_1_ex = [beta[:,1] for beta in beta1_ext]
-        beta1_ext_1sthalf = [torch.stack([x_1, 1-x_1], dim=1) for x_1 in x_1_ex]
-        beta1_ext_2sthalf = [torch.stack([y_1, 1-y_1], dim=1) for y_1 in y_1_ex]
-        
-        ## combine
-        ##ph_down = beta_0_down || beta0_ext_1sthalf || beta1_ext_1sthalf
-        ##ph_up = beta_0_up || beta0_ext_2sthalf || beta1_ext_2sthalf
-        ph_down = [torch.cat((beta_0_down[i], beta0_ext_1sthalf[i], beta1_ext_1sthalf[i]), dim=0) for i in range(len(beta_0_up))]
-        ph_up = [torch.cat((beta_0_up[i], beta0_ext_2sthalf[i], beta1_ext_2sthalf[i]), dim=0) for i in range(len(beta_0_up))]
+        beta1_ext_1sthalf = [torch.stack([x_1, torch.ones_like(x_1)], dim=1) for x_1 in x_1_ex]
+        beta1_ext_2sthalf = [torch.stack([1.0-y_1, torch.ones_like(y_1)], dim=1) for y_1 in y_1_ex]
 
-        ph_up_out = self.ldgm_h1(ph_up)
-        ph_down_out = self.ldgm_h1(ph_down)
+        # define beta2 => ([x_1, 1+cyl_len], [y_1, 1+cyl_len])
+        cyl_len = [torch.stack([torch.tensor(c.size(0)+1, device=input_device) for c in g]) for g in cyl]
+        ## norm
+        cyl_len_tensor = torch.cat(cyl_len)
+        max_value = torch.max(cyl_len_tensor)
+        min_value = torch.min(cyl_len_tensor)
+        norm_cyl_len = []
+        for g in cyl_len:
+            normalized_g = (g - min_value + 1e-6) / (max_value - min_value + 1e-5)
+            normalized_g = normalized_g + 1
+            norm_cyl_len.append(normalized_g)
+        ## combine
+        beta2_1sthalf = []
+        for idx in range(len(x_1_ex)):
+            b21 = torch.stack([x_1_ex[idx], norm_cyl_len[idx]], dim=1)
+            beta2_1sthalf.append(b21)
+        beta2_2sthalf = []
+        for idx in range(len(x_1_ex)):
+            b22 = torch.stack([1-y_1_ex[idx], norm_cyl_len[idx]], dim=1)
+            beta2_2sthalf.append(b22)
+
+        # combine
+        # ph_down = beta_0_down || beta0_ext_2sthalf || beta1_ext_2sthalf || beta2_2sthalf
+        # ph_up = beta_0_up || beta0_ext_1sthalf || beta1_ext_1sthalf || beta2_1sthalf
+        ph_up = [torch.cat((beta1_ext_1sthalf[i], beta2_1sthalf[i]), dim=0) for i in range(len(beta_0_up))]
+        ph_down = [torch.cat((beta1_ext_2sthalf[i], beta2_2sthalf[i]), dim=0) for i in range(len(beta_0_up))]
+
+        # ph_up_out, up_centers, up_r = self.ldgm_h1(ph_up) # [bs,num_struct], [num_struct,2], [num_struct]
+        # ph_up_out = ph_up_out.unsqueeze(-1)
+        # up_centers = up_centers.unsqueeze(0).expand(ph_up_out.size(0),self.num_struct_elements,2)
+        # up_r = up_r.unsqueeze(0).unsqueeze(-1).expand(ph_up_out.size(0),self.num_struct_elements,1)
+        # up_to_attn = torch.cat((ph_up_out,up_centers,up_r), dim=-1)
+        # ph_up_out = self.ph_attn(graph_x,up_to_attn)
+
+        ph_up_out_1 = self.do_ph_attn(ph_up, self.ldgm_h1, graph_x, self.ph_attn_1)
+    
+        # ph_down_out, down_centers, down_r = self.ldgm_h1(ph_down)
+        # ph_down_out = ph_down_out.unsqueeze(-1)
+        # down_centers = down_centers.unsqueeze(0).expand(ph_down_out.size(0),self.num_struct_elements,2)
+        # down_r = down_r.unsqueeze(0).unsqueeze(-1).expand(ph_down_out.size(0),self.num_struct_elements,1)
+        # down_to_attn = torch.cat((ph_down_out, down_centers, down_r), dim=-1)
+        # ph_down_out = self.ph_attn(graph_x,down_to_attn)
+
+        ph_down_out_1 = self.do_ph_attn(ph_down, self.ldgm_h1, graph_x, self.ph_attn_1)
+
+        ph_up_out_2 = self.do_ph_attn(beta_0_up, self.ldgm_h2, graph_x, self.ph_attn_2)
+
+        ph_down_out_2 = self.do_ph_attn(beta_0_down, self.ldgm_h2, graph_x, self.ph_attn_2)
 
         # MSE
-        tpl = -((ph_up_out - ph_down_out)**2).sum()
+        tpl = -((ph_up_out_1 - ph_down_out_1)**2).sum() - ((ph_up_out_2 - ph_down_out_2)**2).sum()
 
-        x = torch.cat([ph_up_out, ph_down_out], dim=1)
+        ph_up_out_1 = ph_up_out_1[:,:,0]
+        ph_down_out_1 = ph_down_out_1[:,:,0]
+        ph_up_out_2 = ph_up_out_2[:,:,0]
+        ph_down_out_2 = ph_down_out_2[:,:,0]
+
+        x = torch.cat([ph_up_out_1, ph_down_out_1, ph_up_out_2, ph_down_out_2], dim=1)
         return x,tpl
+    
+
+    
+class GaussianMixtureModel(nn.Module):
+    def __init__(self, mu1=0.75, mu2=0.25, variance_penalty=1e-3):
+        super().__init__()
+        self.mu1 = mu1
+        self.mu2 = mu2
+
+        self.s1 = nn.Parameter(torch.log(torch.tensor(0.25)))  # r1 = 0.25
+        self.s2 = nn.Parameter(torch.log(torch.tensor(0.25)))  # r2 = 0.25
+
+        self.b = nn.Parameter(torch.tensor(0.0))  # a = sigmoid(0) = 0.5
+
+        self.variance_penalty = variance_penalty
+
+    def forward(self, x):
+
+        r1 = torch.exp(self.s1)  
+        r2 = torch.exp(self.s2)  
+        a = 0.5  # torch.sigmoid(self.b)
+
+        # PDF
+        N1 = (1 / torch.sqrt(2 * torch.pi * r1)) * torch.exp(-0.5 * ((x - self.mu1) ** 2) / r1)
+        N2 = (1 / torch.sqrt(2 * torch.pi * r2)) * torch.exp(-0.5 * ((x - self.mu2) ** 2) / r2)
+
+        # mix PDF
+        p = a * N1 + (1 - a) * N2
+
+        nll = -torch.sum(torch.log(p + 1e-10), dim=1)  
+
+        variance_control = 1.0 / (r1 + 1e-6) + 1.0 / (r2 + 1e-6) 
+
+        loss = torch.mean(nll) + self.variance_penalty * torch.mean(variance_control)
+
+        return loss
+

@@ -55,7 +55,7 @@ def read_ba2motif_data(folder: str, prefix):
 
         node_label = torch.zeros(x.shape[0]).float()
         node_label[20:] = 1
-        edge_label = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25)).float()  ##edge_label与edge_index尺寸一致，然而与cochain[1].x.xize(0)尺寸不一致
+        edge_label = ((edge_index[0] >= 20) & (edge_index[0] < 25) & (edge_index[1] >= 20) & (edge_index[1] < 25)).float() 
         edge_label = torch.tensor(edge_label) ##
 
         data_list.append(Data(x=x, edge_index=edge_index, y=y, node_label=node_label, edge_label=edge_label))

@@ -6,7 +6,7 @@ import collections.abc as container_abcs
 
 
 from pathlib import Path
-from datasets import  PeptidesFunctionalDataset, SynGraphDataset, Mutag
+from datasets import  PeptidesFunctionalDataset, SynGraphDataset, Mutag, SPMotif, BaHouseGrid, Benzene
 from .cell_complex import Cochain, CochainBatch, Complex, ComplexBatch
 
 
@@ -82,6 +82,7 @@ class DataLoader(torch.utils.data.DataLoader):
 
 def get_data_loaders(dataset_name, batch_size, data_config, seed=42):
     data_dir = Path(data_config['data_dir'])
+    dataset = None
     # assert dataset_name in ['tau3mu', 'plbind', 'synmol'] or 'acts' in dataset_name
 
     # elif dataset_name == 'tau3mu':
@@ -94,9 +95,22 @@ def get_data_loaders(dataset_name, batch_size, data_config, seed=42):
     elif dataset_name == 'ba_2motifs':
         dataset = SynGraphDataset(data_dir, name='ba_2motifs', max_ring_size=data_config['max_ring_size'])
         loaders, test_set= get_loaders_and_test_set(batch_size, dataset=dataset)
+    elif dataset_name in list(BaHouseGrid.names.keys()):
+        dataset = BaHouseGrid(data_dir, name=dataset_name, max_ring_size=data_config['max_ring_size'])
+        loaders, test_set = get_loaders_and_test_set(batch_size, dataset=dataset)
     elif dataset_name == 'mutag':
         dataset = Mutag(data_dir, max_ring_size=data_config['max_ring_size'])
         loaders, test_set= get_loaders_and_test_set(batch_size, dataset=dataset)
+    elif dataset_name == 'benzene':
+        dataset = Benzene(data_dir, max_ring_size=data_config['max_ring_size'])
+        loaders, test_set= get_loaders_and_test_set(batch_size, dataset=dataset)
+    elif 'spmotif' in dataset_name:
+        b = float(dataset_name.split('_')[-1])
+        train_set = SPMotif(root=data_dir / dataset_name, b=b, mode='train', max_ring_size=data_config['max_ring_size'])
+        valid_set = SPMotif(root=data_dir / dataset_name, b=b, mode='val', max_ring_size=data_config['max_ring_size'])
+        test_set = SPMotif(root=data_dir / dataset_name, b=b, mode='test', max_ring_size=data_config['max_ring_size'])
+        print('[INFO] Using default splits!')
+        loaders, test_set = get_loaders_and_test_set(batch_size, dataset_splits={'train': train_set, 'valid': valid_set, 'test': test_set})
 
     x_dim = test_set[0].nodes.x.shape[1]
     edge_attr_dim = 0 if test_set[0].edges is None else test_set[0].edges.x.shape[1]
@@ -104,17 +118,24 @@ def get_data_loaders(dataset_name, batch_size, data_config, seed=42):
     return loaders, dataset, test_set, x_dim, edge_attr_dim
 
 
-def get_loaders_and_test_set(batch_size, dataset):
-    split_idx = dataset.get_idx_split()
-    train_loader = DataLoader(dataset.get_split('train'), batch_size=batch_size,
-            shuffle=True, num_workers=0, max_dim=dataset.max_dim)
-    valid_loader = DataLoader(dataset.get_split('valid'), batch_size=batch_size,
-            shuffle=False, num_workers=0, max_dim=dataset.max_dim)
-    test_split = split_idx.get("test", None)
-    test_loader = None
-    if test_split is not None:
-        test_loader = DataLoader(dataset.get_split('test'), batch_size=batch_size,
+def get_loaders_and_test_set(batch_size, dataset=None, dataset_splits=None):
+    if dataset is not None:
+        split_idx = dataset.get_idx_split()
+        train_loader = DataLoader(dataset.get_split('train'), batch_size=batch_size,
+                shuffle=True, num_workers=0, max_dim=dataset.max_dim)
+        valid_loader = DataLoader(dataset.get_split('valid'), batch_size=batch_size,
                 shuffle=False, num_workers=0, max_dim=dataset.max_dim)
+        test_split = split_idx.get("test", None)
+        test_loader = None
+        if test_split is not None:
+            test_loader = DataLoader(dataset.get_split('test'), batch_size=batch_size,
+                    shuffle=False, num_workers=0, max_dim=dataset.max_dim)
 
-    test_set = dataset.copy(dataset.test_ids)  # For visualization
+        test_set = dataset.copy(dataset.test_ids)  # For visualization
+    else:
+        assert dataset_splits is not None
+        train_loader = DataLoader(dataset_splits['train'], batch_size=batch_size, shuffle=True, num_workers=0)
+        valid_loader = DataLoader(dataset_splits['valid'], batch_size=batch_size, shuffle=False, num_workers=0)
+        test_loader = DataLoader(dataset_splits['test'], batch_size=batch_size, shuffle=False, num_workers=0)
+        test_set = dataset_splits['test']  # For visualization
     return {'train': train_loader, 'valid': valid_loader, 'test': test_loader}, test_set
